@@ -26,9 +26,9 @@ const client = new Client({
 
 // Comandos Slash
 const commands = [
-  new SlashCommandBuilder()
-    .setName('iniciar')
-    .setDescription('Inicia o bot e faz login no portal'),
+  //new SlashCommandBuilder()
+   // .setName('iniciar')
+   // .setDescription('Inicia o bot e faz login no portal'),
   
   new SlashCommandBuilder()
     .setName('listar-clientes')
@@ -50,14 +50,13 @@ const commands = [
           { name: 'API Cobrança', value: 'API Cobrança' },
           { name: 'Catálogo Digital', value: 'Catálogo Digital' },
           { name: 'Certificado Digital', value: 'Certificado Digital' },
+          { name: 'Catálogo Digital V2', value: 'Catálogo Digital V2' },
           { name: 'Collector', value: 'Collector' },
           { name: 'Conciliador de Cartões', value: 'Conciliador de Cartões' },
           { name: 'DDA - Nuvem de Boletos', value: 'DDA - Nuvem de Boletos' },
           { name: 'Drica IA (WhatsApp)', value: 'Drica IA (WhatsApp)' },
           { name: 'EDocs (NFs-e)', value: 'EDocs (NFs-e)' },
-          {
-            name: 'Integration Marketplace', value: 'Integration Marketplace'
-          },
+          { name: 'Integration Marketplace', value: 'Integration Marketplace' },
           { name: 'Integração Contábil', value: 'Integração Contábil' },
           { name: 'Nuvem Fiscal API', value: 'Nuvem Fiscal API' },
           { name: 'QueroBonus', value: 'QueroBonus' },
@@ -67,9 +66,7 @@ const commands = [
           { name: 'SoftcomShip', value: 'SoftcomShip' },
           { name: 'SoftConnect', value: 'SoftConnect' },
           { name: 'SoftDelivery', value: 'SoftDelivery' },
-          
           { name: 'Tá na Mão', value: 'Tá na Mão' },
-          { name: 'Tá no Menu', value: 'Tá no Menu' },
           { name: 'Venda Mais CRM', value: 'Venda Mais CRM' },
           { name: 'Vendas360', value: 'Vendas360' },
         )),
@@ -84,22 +81,22 @@ const commands = [
   
   new SlashCommandBuilder()
     .setName('status')
-    .setDescription('Verifica o status do bot'),
+    .setDescription('Verifica o status do bot e das sessões'),
+  
+ // new SlashCommandBuilder()
+   // .setName('desligar')
+   // .setDescription('Desliga o bot e fecha o navegador'),
   
   new SlashCommandBuilder()
-    .setName('desligar')
-    .setDescription('Desliga o bot e fecha o navegador'),
-  
-  new SlashCommandBuilder()
-    .setName('gerar-chave-nuvem')
+   .setName('gerar-chave-nuvem')
     .setDescription('Gera chave de acesso Nuvem Fiscal para um cliente')
     .addStringOption(option =>
       option.setName('cnpj')
         .setDescription('CNPJ do cliente (formato: 00.000.000/0000-00)')
         .setRequired(true))
-    .addStringOption(option =>
+   .addStringOption(option =>
       option.setName('descricao')
-        .setDescription('Descrição da chave (opcional)')
+       .setDescription('Descrição da chave (opcional)')
         .setRequired(false)),
 ];
 
@@ -121,18 +118,28 @@ async function registerCommands() {
   }
 }
 
-// Inicializar Puppeteer
+// Inicializar Puppeteer com pool de abas
 async function initPuppeteer() {
   try {
     if (!puppeteerService) {
       puppeteerService = new PuppeteerService();
       await puppeteerService.init();
-      await puppeteerService.login();
+      
+      // Fazer login em todas as abas
+      const loginResult = await puppeteerService.loginAllTabs();
+      
       isInitialized = true;
-      console.log('✅ Puppeteer inicializado e logado!');
-      return { success: true, message: 'Bot iniciado e conectado ao portal!' };
+      console.log('✅ Puppeteer inicializado com pool de abas!');
+      return { 
+        success: true, 
+        message: `Bot iniciado! ${loginResult.readyTabs} sessões prontas para uso.` 
+      };
     } else {
-      return { success: true, message: 'Bot já está iniciado!' };
+      const status = puppeteerService.getPoolStatus();
+      return { 
+        success: true, 
+        message: `Bot já está iniciado! ${status.available} sessões disponíveis.` 
+      };
     }
   } catch (error) {
     console.error('❌ Erro ao inicializar Puppeteer:', error);
@@ -150,7 +157,7 @@ function checkInitialized() {
 }
 
 // Quando o bot estiver pronto
-client.once('ready', async () => {
+client.once('clientReady', async () => {
   console.log('=================================');
   console.log(`🤖 Bot logado como ${client.user.tag}`);
   console.log('=================================');
@@ -158,7 +165,7 @@ client.once('ready', async () => {
   await registerCommands();
   
   // Inicializar Puppeteer automaticamente
-  console.log('🚀 Inicializando Puppeteer automaticamente...');
+  console.log('🚀 Inicializando Puppeteer com pool de abas...');
   await initPuppeteer();
 });
 
@@ -167,6 +174,8 @@ client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
   const { commandName } = interaction;
+  const userId = interaction.user.id;
+  const userName = interaction.user.username;
 
   try {
     // Comando: /iniciar
@@ -193,8 +202,19 @@ client.on('interactionCreate', async interaction => {
 
       await interaction.deferReply();
 
-      await puppeteerService.navegarParaClientes();
-      const result = await puppeteerService.extrairClientes();
+      const result = await puppeteerService.extrairClientes(userId);
+
+      // Verificar se todas as sessões estão ocupadas
+      if (result.allBusy) {
+        const embed = new EmbedBuilder()
+          .setTitle('⏳ Sessões Ocupadas')
+          .setDescription(result.message)
+          .setColor(0xffaa00)
+          .setTimestamp();
+        
+        await interaction.editReply({ embeds: [embed] });
+        return;
+      }
 
       if (result.success) {
         const clientes = result.data.slice(0, 10); // Primeiros 10
@@ -231,28 +251,53 @@ client.on('interactionCreate', async interaction => {
 
       await interaction.deferReply();
 
+      // Verificar se há sessão disponível ANTES de começar
+      if (!puppeteerService.hasAvailableTab()) {
+        const embed = new EmbedBuilder()
+          .setTitle('⏳ Sessões Ocupadas')
+          .setDescription('Todas as nossas sessões estão ocupadas no momento, tente mais tarde.')
+          .addFields(
+            { name: 'CNPJ', value: cnpj, inline: true },
+            { name: 'Produto', value: produto, inline: true }
+          )
+          .setColor(0xffaa00)
+          .setTimestamp();
+        
+        await interaction.editReply({ embeds: [embed] });
+        return;
+      }
+
       const embed = new EmbedBuilder()
         .setTitle('⏳ Processando...')
-        .setDescription(`Adicionando **${produto}** para o cliente **${cnpj}**`)
+        .setDescription(`Adicionando **${produto}** para o cliente com CNPJ **${cnpj}**`)
+        .setFooter({ text: `Solicitado por ${userName}` })
         .setColor(0xffff00)
         .setTimestamp();
 
       await interaction.editReply({ embeds: [embed] });
 
-      // Buscar cliente por CNPJ
-      await puppeteerService.navegarParaClientes();
-      //nst clientesResult = await puppeteerService.extrairClientes();
-
-     
- 
-      
-  
-
-      // Adicionar produto usando CNPJ (com pesquisa)
+      // Adicionar produto usando CNPJ (com pool de abas)
       const result = await puppeteerService.adicionarProdutoParaClientePorCNPJ(
+        userId,
         cnpj,
         produto
       );
+
+      // Verificar se todas as sessões estavam ocupadas
+      if (result.allBusy) {
+        const busyEmbed = new EmbedBuilder()
+          .setTitle('⏳ Sessões Ocupadas')
+          .setDescription(result.message)
+          .addFields(
+            { name: 'CNPJ', value: cnpj, inline: true },
+            { name: 'Produto', value: produto, inline: true }
+          )
+          .setColor(0xffaa00)
+          .setTimestamp();
+        
+        await interaction.editReply({ embeds: [busyEmbed] });
+        return;
+      }
 
       const finalEmbed = new EmbedBuilder()
         .setTitle(result.success ? '✅ Sucesso!' : '❌ Erro')
@@ -261,6 +306,7 @@ client.on('interactionCreate', async interaction => {
           { name: 'CNPJ', value: cnpj, inline: true },
           { name: 'Produto', value: produto, inline: true }
         )
+        .setFooter({ text: `Solicitado por ${userName}` })
         .setColor(result.success ? 0x00ff00 : 0xff0000)
         .setTimestamp();
 
@@ -278,8 +324,19 @@ client.on('interactionCreate', async interaction => {
 
       await interaction.deferReply();
 
-      await puppeteerService.navegarParaClientes();
-      const result = await puppeteerService.extrairClientes();
+      const result = await puppeteerService.extrairClientes(userId);
+
+      // Verificar se todas as sessões estão ocupadas
+      if (result.allBusy) {
+        const embed = new EmbedBuilder()
+          .setTitle('⏳ Sessões Ocupadas')
+          .setDescription(result.message)
+          .setColor(0xffaa00)
+          .setTimestamp();
+        
+        await interaction.editReply({ embeds: [embed] });
+        return;
+      }
 
       if (result.success) {
         const clientesEncontrados = result.data.filter(c =>
@@ -313,14 +370,40 @@ client.on('interactionCreate', async interaction => {
 
     // Comando: /status
     else if (commandName === 'status') {
+      if (!checkInitialized()) {
+        const embed = new EmbedBuilder()
+          .setTitle('📊 Status do Bot')
+          .addFields(
+            { name: 'Status', value: '🔴 Offline', inline: true },
+            { name: 'Sessões', value: '0/0 disponíveis', inline: true }
+          )
+          .setColor(0xff0000)
+          .setTimestamp();
+
+        await interaction.reply({ embeds: [embed] });
+        return;
+      }
+
+      const poolStatus = puppeteerService.getPoolStatus();
+      
+      // Criar string com status de cada abaclientReady
+      let tabsStatus = '';
+      poolStatus.tabs.forEach(tab => {
+        const icon = tab.busy ? '🔴' : (tab.status === 'Ready' ? '🟢' : '🟢');
+        const userInfo = tab.currentUser ? ` (${tab.currentUser})` : '';
+        tabsStatus += `${icon} Sessão ${tab.id}: ${tab.status}${userInfo}\n`;
+      });
+
       const embed = new EmbedBuilder()
         .setTitle('📊 Status do Bot')
         .addFields(
-          { name: 'Status', value: isInitialized ? '🟢 Online' : '🔴 Offline', inline: true },
-          { name: 'Navegador', value: puppeteerService ? '✅ Ativo' : '❌ Inativo', inline: true },
-          { name: 'Uptime', value: `${Math.floor(client.uptime / 1000 / 60)} minutos`, inline: true }
+          { name: 'Status Geral', value: isInitialized ? '🟢 Online' : '🔴 Offline', inline: true },
+          { name: 'Sessões Disponíveis', value: `${poolStatus.available}/${poolStatus.total}`, inline: true },
+          { name: 'Sessões Ocupadas', value: `${poolStatus.busy}`, inline: true },
+          { name: 'Uptime', value: `${Math.floor(client.uptime / 1000 / 60)} minutos`, inline: true },
+          { name: '\n📑 Detalhes das Sessões', value: tabsStatus || 'Nenhuma sessão', inline: false }
         )
-        .setColor(isInitialized ? 0x00ff00 : 0xff0000)
+        .setColor(poolStatus.available > 0 ? 0x00ff00 : 0xffaa00)
         .setTimestamp();
 
       await interaction.reply({ embeds: [embed] });
@@ -352,62 +435,58 @@ client.on('interactionCreate', async interaction => {
 
       await interaction.deferReply();
 
+      // Verificar se há sessão disponível
+      if (!puppeteerService.hasAvailableTab()) {
+        const embed = new EmbedBuilder()
+          .setTitle('⏳ Sessões Ocupadas')
+          .setDescription('Todas as nossas sessões estão ocupadas no momento, tente mais tarde.')
+          .setColor(0xffaa00)
+          .setTimestamp();
+        
+        await interaction.editReply({ embeds: [embed] });
+        return;
+      }
+
       const embed = new EmbedBuilder()
         .setTitle('⏳ Processando...')
         .setDescription(`Gerando chave Nuvem Fiscal para o cliente **${cnpj}**`)
+        .setFooter({ text: `Solicitado por ${userName}` })
         .setColor(0xffff00)
         .setTimestamp();
 
       await interaction.editReply({ embeds: [embed] });
 
-      // Buscar cliente por CNPJ
-      await puppeteerService.navegarParaClientes();
-      const clientesResult = await puppeteerService.extrairClientes();
-
-      if (!clientesResult.success) {
-        const errorEmbed = new EmbedBuilder()
-          .setTitle('❌ Erro')
-          .setDescription(`Não foi possível listar clientes: ${clientesResult.message}`)
-          .setColor(0xff0000);
-        
-        await interaction.editReply({ embeds: [errorEmbed] });
-        return;
-      }
-
-      // Encontrar cliente pelo CNPJ
-      const cliente = clientesResult.data.find(c => 
-        c.cnpj && c.cnpj.replace(/\D/g, '') === cnpj.replace(/\D/g, '')
-      );
-
-      if (!cliente) {
-        const errorEmbed = new EmbedBuilder()
-          .setTitle('❌ Cliente não encontrado')
-          .setDescription(`Nenhum cliente encontrado com o CNPJ: **${cnpj}**`)
-          .setColor(0xff0000);
-        
-        await interaction.editReply({ embeds: [errorEmbed] });
-        return;
-      }
-
       // Gerar chave Nuvem Fiscal
-      const result = await puppeteerService.gerarChaveNuvemFiscalParaCliente(
-        cliente.titulo,
+      const result = await puppeteerService.gerarChaveNuvemFiscalParaClientePorCNPJ(
+        userId,
+        cnpj,
         descricao
       );
+
+      // Verificar se todas as sessões estavam ocupadas
+      if (result.allBusy) {
+        const busyEmbed = new EmbedBuilder()
+          .setTitle('⏳ Sessões Ocupadas')
+          .setDescription(result.message)
+          .setColor(0xffaa00)
+          .setTimestamp();
+        
+        await interaction.editReply({ embeds: [busyEmbed] });
+        return;
+      }
 
       if (result.success && result.data) {
         const finalEmbed = new EmbedBuilder()
           .setTitle('✅ Chaves Geradas com Sucesso!')
-          .setDescription(`Chaves de acesso Nuvem Fiscal para **${cliente.titulo}**`)
+          .setDescription(`Chaves de acesso Nuvem Fiscal`)
           .addFields(
-            { name: '👤 Cliente', value: cliente.titulo, inline: false },
             { name: '📄 CNPJ', value: cnpj, inline: true },
             { name: '📝 Descrição', value: result.data.descricao, inline: true },
             { name: '🔑 Access Key', value: `\`\`\`${result.data.accessKey}\`\`\``, inline: false },
             { name: '🔐 Secret Key', value: `\`\`\`${result.data.secretKey}\`\`\``, inline: false }
           )
+          .setFooter({ text: `⚠️ Guarde estas chaves em local seguro! | Solicitado por ${userName}` })
           .setColor(0x00ff00)
-          .setFooter({ text: '⚠️ Guarde estas chaves em local seguro!' })
           .setTimestamp();
 
         await interaction.editReply({ embeds: [finalEmbed] });
@@ -416,9 +495,9 @@ client.on('interactionCreate', async interaction => {
           .setTitle('❌ Erro ao Gerar Chaves')
           .setDescription(result.message || 'Nuvem Fiscal pode não estar ativo para este cliente')
           .addFields(
-            { name: 'Cliente', value: cliente.titulo, inline: true },
             { name: 'CNPJ', value: cnpj, inline: true }
           )
+          .setFooter({ text: `Solicitado por ${userName}` })
           .setColor(0xff0000)
           .setTimestamp();
 

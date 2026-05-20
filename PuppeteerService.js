@@ -12,229 +12,342 @@ const LOGIN_URL = 'https://portal.softcomservices.com/Account/Login?ReturnUrl=%2
 const PORTAL_USERNAME = process.env.PORTAL_USERNAME || 'vanderson';
 const PORTAL_PASSWORD = process.env.PORTAL_PASSWORD || 'franquias';
 
+// Número máximo de abas/sessões simultâneas
+const MAX_TABS = 5;
+
 class PuppeteerService {
   constructor() {
     this.browser = null;
-    this.page = null;
+    this.tabs = []; // Array de { page, busy, lastUsed, id }
   }
 
   async init() {
+    console.log('🚀 Inicializando Puppeteer com pool de abas...');
+    
+   // this.browser = await puppeteer.launch({  
+      //headless: true, 
+     // userDataDir: USER_DATA_PATH,
+    //  args: ['--no-sandbox', '--disable-setuid-sandbox']
+
     this.browser = await puppeteer.launch({  
-      headless: false, 
-      userDataDir: USER_DATA_PATH
-    });
-    this.page = await this.browser.newPage();
-    await this.page.setViewport({ width: 1080, height: 1024 });
-  }
+  headless: 'new', 
+  userDataDir: USER_DATA_PATH,
+  executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe',
+  args: ['--no-sandbox', '--disable-setuid-sandbox']
+});
+   
 
-  async login() {
-    try {
-      console.log('🔐 Fazendo login no portal com credenciais fixas...');
+    // Criar as 5 abas
+    for (let i = 0; i < MAX_TABS; i++) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      const page = await this.browser.newPage();
+      await page.setViewport({ width: 1080, height: 1024 });
       
-      await this.page.goto(CLIENTES_URL, { waitUntil: 'networkidle0' });
-      
-      const currentUrl = this.page.url();
-      
-      if (currentUrl.startsWith(LOGIN_URL)) {
-        await this.page.type('#UserName', PORTAL_USERNAME);
-        await this.page.type('#Password', PORTAL_PASSWORD);
-        
-        await Promise.all([
-          this.page.click('button[type="submit"]'),
-          this.page.waitForNavigation({ waitUntil: 'networkidle0' }),
-        ]);
-        
-        console.log('✅ Login no portal realizado! URL atual:', this.page.url());
-      } else {
-        console.log('✅ Já está logado no portal! URL atual:', this.page.url());
-      }
-      
-      return { success: true, message: 'Login no portal realizado com sucesso' };
-    } catch (error) {
-      console.error('❌ Erro no login do portal:', error);
-      return { success: false, message: error.message };
-    }
-  }
-
-  async navegarParaClientes() {
-    try {
-      const urlAtual = this.page.url();
-      
-      // Se está na página de login, tenta fazer login
-      if (urlAtual.includes('/Account/Login')) {
-        console.log('🔄 Detectou página de login, fazendo login...');
-        const loginResult = await this.login();
-        
-        if (!loginResult.success) {
-          return loginResult;
-        }
-      }
-      
-      if (!urlAtual.includes('/Clientes')) {
-        console.log('📍 Navegando para página de Clientes...');
-        
-        await this.page.waitForSelector('a[href="/Clientes"]', { visible: true });
-        
-        await Promise.all([
-          this.page.waitForNavigation({ waitUntil: 'networkidle0' }),
-          this.page.click('a[href="/Clientes"]')
-        ]);
-        
-        console.log('✅ Chegou na página de Clientes');
-      } else {
-        console.log('✅ Já está na página de Clientes!');
-      }
-      
-      return { success: true };
-    } catch (error) {
-      console.error('❌ Erro ao navegar para clientes:', error);
-      return { success: false, message: error.message };
-    }
-  }
-
-  async extrairClientes() {
-    try {
-      await this.page.waitForSelector('table#dataTable tbody tr', { timeout: 10000 });
-      
-      const clientes = await this.page.evaluate(() => {
-        const data = [];  
-        const linhas = document.querySelectorAll('table#dataTable tbody tr');
-        
-        linhas.forEach((linha) => {
-          const titulo = linha.querySelector('p.m-0 strong')?.innerText.trim();
-          
-          // Extrair todo o texto da linha
-          const textoCompleto = linha.innerText;
-          
-          // Tentar múltiplos formatos de CNPJ
-          let cnpj = null;
-          
-          // Formato: XX.XXX.XXX/XXXX-XX
-          let cnpjMatch = textoCompleto.match(/\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}/);
-          if (cnpjMatch) {
-            cnpj = cnpjMatch[0];
-          } else {
-            // Formato: XXXXXXXXXXXXXX (14 dígitos)
-            cnpjMatch = textoCompleto.match(/\b\d{14}\b/);
-            if (cnpjMatch) {
-              // Formatar: XX.XXX.XXX/XXXX-XX
-              const num = cnpjMatch[0];
-              cnpj = `${num.substr(0,2)}.${num.substr(2,3)}.${num.substr(5,3)}/${num.substr(8,4)}-${num.substr(12,2)}`;
-            }
-          }
-          
-          if (titulo) {
-            data.push({ 
-              titulo,
-              cnpj,
-              textoCompleto // Debug
-            });
-          }
-        });
-        
-        return data;
+      this.tabs.push({
+        id: i + 1,
+        page: page,
+        busy: false,
+        lastUsed: null,
+        currentUser: null,
+        status: 'idle' // idle, logging_in, ready, working
       });
       
-      console.log(`✅ ${clientes.length} clientes extraídos`);
-      
-      // Debug: mostrar primeiros 3 clientes
-      if (clientes.length > 0) {
-        console.log('📋 Primeiros clientes:');
-        clientes.slice(0, 3).forEach((c, i) => {
-          console.log(`  ${i + 1}. ${c.titulo} - CNPJ: ${c.cnpj || 'NÃO ENCONTRADO'}`);
-        });
+      console.log(`📑 Aba ${i + 1} criada`);
+    }
+
+    // Fechar a aba padrão que abre com o browser
+    const pages = await this.browser.pages();
+    if (pages.length > MAX_TABS) {
+      await pages[0].close();
+    }
+
+    console.log(`✅ Pool inicializado com ${MAX_TABS} abas`);
+  }
+
+  // Fazer login em todas as abas
+  async loginAllTabs() {
+    console.log('🔐 Fazendo login em todas as abas...');
+    
+    const loginPromises = this.tabs.map(async (tab) => {
+      try {
+        tab.status = 'logging_in';
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        await this.loginTab(tab);
+        tab.status = 'ready';
+        console.log(`✅ Aba ${tab.id} logada e pronta!`);
+      } catch (error) {
+        console.error(`❌ Erro ao logar aba ${tab.id}:`, error.message);
+        tab.status = 'error';
       }
+    });
+
+    await Promise.all(loginPromises);
+    
+    const readyTabs = this.tabs.filter(t => t.status === 'ready').length;
+    console.log(`✅ ${readyTabs}/${MAX_TABS} abas prontas para uso`);
+    
+    return { success: true, readyTabs };
+  }
+
+  // Login em uma aba específica
+  async loginTab(tab) {
+    const page = tab.page;
+    
+    await page.goto(CLIENTES_URL, { waitUntil: 'networkidle0', timeout: 30000 });
+    
+    const currentUrl = page.url();
+    
+    if (currentUrl.startsWith(LOGIN_URL)) {
+      await page.type('#UserName', PORTAL_USERNAME);
+      await page.type('#Password', PORTAL_PASSWORD);
       
-      return { success: true, data: clientes };
-    } catch (error) {
-      console.error('❌ Erro ao extrair clientes:', error);
-      return { success: false, message: error.message };
+      await Promise.all([
+        page.click('button[type="submit"]'),
+        page.waitForNavigation({ waitUntil: 'networkidle0' }),
+      ]);
+    }
+    
+    // Garantir que está na página de clientes
+    await this.navegarParaClientesTab(tab);
+  }
+
+  // Navegar para clientes em uma aba específica
+  async navegarParaClientesTab(tab) {
+    const page = tab.page;
+    const urlAtual = page.url();
+    
+    if (urlAtual.includes('/Account/Login')) {
+      await this.loginTab(tab);
+      return;
+    }
+    
+    if (!urlAtual.includes('/Clientes') || urlAtual.includes('guid_customer')) {
+      try {
+        const menuClicado = await page.evaluate(() => {
+          const link = document.querySelector('a[href="/Clientes"]');
+          if (link) {
+            link.click();
+            return true;
+          }
+          return false;
+        });
+        
+        if (menuClicado) {
+          await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 10000 });
+        } else {
+          await page.goto(CLIENTES_URL, { waitUntil: 'networkidle0', timeout: 15000 });
+        }
+      } catch (e) {
+        await page.goto(CLIENTES_URL, { waitUntil: 'networkidle0', timeout: 15000 });
+      }
     }
   }
 
   // ============================================================
-  // FUNÇÃO CORRIGIDA - pesquisarClientePorCNPJ
+  // GERENCIAMENTO DO POOL DE ABAS
   // ============================================================
-  async pesquisarClientePorCNPJ(cnpj) {
+
+  // Obter uma aba disponível
+  getAvailableTab() {
+    // Procurar aba livre e pronta
+    const availableTab = this.tabs.find(tab => 
+      !tab.busy && tab.status === 'ready'
+    );
+    
+    return availableTab || null;
+  }
+
+  // Reservar uma aba para uso
+  async reserveTab(userId) {
+    const tab = this.getAvailableTab();
+    
+    if (!tab) {
+      return null;
+    }
+    
+    tab.busy = true;
+    tab.currentUser = userId;
+    tab.lastUsed = new Date();
+    tab.status = 'working';
+    
+    // IMPORTANTE: Trazer a aba para frente (necessário no modo headless: false)
     try {
-      console.log(`🔍 Pesquisando cliente por CNPJ: ${cnpj}`);
+      await tab.page.bringToFront();
+    } catch (e) {
+      console.log(`⚠️ Não foi possível trazer aba ${tab.id} para frente`);
+    }
+    
+    console.log(`🔒 Aba ${tab.id} reservada para usuário ${userId}`);
+    return tab;
+  }
+
+  // Liberar uma aba após uso
+  async releaseTab(tab) {
+    if (!tab) return;
+    
+    console.log(`🔓 Liberando aba ${tab.id}...`);
+    
+    try {
+      // Voltar para página de clientes
+      await this.navegarParaClientesTab(tab);
       
-      // Normalizar CNPJ para apenas números
+      // Limpar campo de pesquisa se existir
+      try {
+        const page = tab.page;
+        const searchField = await page.$('#dt-search-0');
+        if (searchField) {
+          await page.click('#dt-search-0', { clickCount: 3 });
+          await page.keyboard.press('Backspace');
+        }
+      } catch (e) {
+        // Ignorar erro de limpeza
+      }
+      
+      tab.status = 'ready';
+    } catch (error) {
+      console.error(`❌ Erro ao preparar aba ${tab.id}:`, error.message);
+      tab.status = 'error';
+      
+      // Tentar recuperar a aba
+      try {
+        await this.loginTab(tab);
+        tab.status = 'ready';
+      } catch (e) {
+        console.error(`❌ Não foi possível recuperar aba ${tab.id}`);
+      }
+    }
+    
+    tab.busy = false;
+    tab.currentUser = null;
+    
+    console.log(`✅ Aba ${tab.id} liberada e pronta`);
+  }
+
+  // Verificar status do pool
+  getPoolStatus() {
+    const status = {
+      total: this.tabs.length,
+      available: 0,
+      busy: 0,
+      error: 0,
+      tabs: []
+    };
+    
+    this.tabs.forEach(tab => {
+      const tabInfo = {
+        id: tab.id,
+        status: tab.status,
+        busy: tab.busy,
+        currentUser: tab.currentUser,
+        lastUsed: tab.lastUsed
+      };
+      
+      status.tabs.push(tabInfo);
+      
+      if (tab.busy) {
+        status.busy++;
+      } else if (tab.status === 'ready') {
+        status.available++;
+      } else if (tab.status === 'error') {
+        status.error++;
+      }
+    });
+    
+    return status;
+  }
+
+  // Verificar se há abas disponíveis
+  hasAvailableTab() {
+    return this.tabs.some(tab => !tab.busy && tab.status === 'ready');
+  }
+
+  // ============================================================
+  // OPERAÇÕES COM POOL (usa aba disponível automaticamente)
+  // ============================================================
+
+  async pesquisarClientePorCNPJ(tab, cnpj) {
+    const page = tab.page;
+    
+    try {
+      console.log(`[Aba ${tab.id}] 🔍 Pesquisando cliente por CNPJ: ${cnpj}`);
+      
       const cnpjNumeros = cnpj.replace(/\D/g, '');
-      console.log(`📋 CNPJ normalizado: ${cnpjNumeros}`);
+      console.log(`[Aba ${tab.id}] 📋 CNPJ normalizado: ${cnpjNumeros}`);
       
-      // Aguardar campo de pesquisa estar disponível
-      await this.page.waitForSelector('#dt-search-0', { visible: true, timeout: 10000 });
+      await page.waitForSelector('#dt-search-0', { visible: true, timeout: 10000 });
       
-      // Limpar campo de pesquisa completamente
-      console.log('🧹 Limpando campo de pesquisa...');
-      await this.page.click('#dt-search-0', { clickCount: 3 });
-      await this.page.keyboard.press('Backspace');
+      // Limpar campo de pesquisa
+      console.log(`[Aba ${tab.id}] 🧹 Limpando campo de pesquisa...`);
+      await page.click('#dt-search-0', { clickCount: 3 });
+      await page.keyboard.press('Backspace');
       await new Promise(resolve => setTimeout(resolve, 300));
       
-      // Limpar novamente usando Ctrl+A e Delete
-      await this.page.focus('#dt-search-0');
-      await this.page.keyboard.down('Control');
-      await this.page.keyboard.press('a');
-      await this.page.keyboard.up('Control');
-      await this.page.keyboard.press('Delete');
+      await page.focus('#dt-search-0');
+      await page.keyboard.down('Control');
+      await page.keyboard.press('a');
+      await page.keyboard.up('Control');
+      await page.keyboard.press('Delete');
       await new Promise(resolve => setTimeout(resolve, 300));
       
-      console.log('📝 Digitando CNPJ no campo de pesquisa...');
-      await this.page.type('#dt-search-0', cnpjNumeros, { delay: 50 });
+      console.log(`[Aba ${tab.id}] 📝 Digitando CNPJ...`);
+      await page.type('#dt-search-0', cnpjNumeros, { delay: 50 });
       
-      // Pressionar Enter para pesquisar
-      console.log('⏎ Pressionando Enter para pesquisar...');
-      await this.page.keyboard.press('Enter');
+      console.log(`[Aba ${tab.id}] ⏎ Pressionando Enter...`);
+      await page.keyboard.press('Enter');
       
-      // ============================================================
-      // CORREÇÃO 1: Esperar mais tempo (pesquisa é lenta)
-      // ============================================================
-      console.log('⏳ Aguardando resultados da pesquisa (5 segundos)...');
+      console.log(`[Aba ${tab.id}] ⏳ Aguardando resultados (5 segundos)...`);
       await new Promise(resolve => setTimeout(resolve, 5000));
       
-      // Aguardar tabela atualizar (tentar detectar mudança)
       try {
-        await this.page.waitForFunction(() => {
+        await page.waitForFunction(() => {
           const loading = document.querySelector('.dataTables_processing');
           return !loading || loading.style.display === 'none';
         }, { timeout: 10000 });
-        console.log('✅ Tabela terminou de carregar');
       } catch (e) {
-        console.log('⚠️ Timeout aguardando tabela, continuando...');
+        console.log(`[Aba ${tab.id}] ⚠️ Timeout aguardando tabela`);
       }
       
-      // Aguardar um pouco mais para garantir
       await new Promise(resolve => setTimeout(resolve, 2000));
       
-      // ============================================================
-      // CORREÇÃO 2: Verificar resultados e contar quantos retornaram
-      // ============================================================
-      const resultadoPesquisa = await this.page.evaluate(() => {
+      const resultadoPesquisa = await page.evaluate(() => {
         const linhas = document.querySelectorAll('table#dataTable tbody tr');
         const resultados = [];
         
         for (let linha of linhas) {
           const textoLinha = linha.innerText;
           
-          // Ignorar linha de "nenhum registro"
           if (textoLinha.includes('Nenhum registro') || 
               textoLinha.includes('No data available') ||
               textoLinha.includes('No matching records')) {
             return { encontrou: false, quantidade: 0, clientes: [] };
           }
+          const bloqueado = linha.querySelector('.badge-danger, .badge.badge-pill.badge-danger, span.badge-danger');
           
-          // Extrair dados do cliente
+          // Verificar também pelo texto da linha (backup)
+          const temTextoBloqueado = textoLinha.includes('Bloqueado');
+          
+          if ((bloqueado && bloqueado.innerText.trim() === 'Bloqueado') || temTextoBloqueado) {
+            // Pegar nome do cliente para o log
+            const strongEl = linha.querySelector('p.m-0 strong');
+            const nomeCliente = strongEl ? strongEl.innerText.trim() : 'Desconhecido';
+            
+            return { 
+              encontrou: true, 
+              quantidade: 1, 
+              clientes: [], 
+              bloqueado: true,
+              nomeClienteBloqueado: nomeCliente,
+              mensagemBloqueio: 'Cliente está BLOQUEADO no sistema'
+            };
+          }
           const strongElement = linha.querySelector('p.m-0 strong');
           const titulo = strongElement ? strongElement.innerText.trim() : '';
           
-          // Extrair CNPJ da linha
           let cnpjLinha = null;
           const cnpjMatch = textoLinha.match(/\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}/);
           if (cnpjMatch) {
             cnpjLinha = cnpjMatch[0];
           } else {
-            // Tentar formato sem pontuação
             const cnpjNumMatch = textoLinha.match(/\b\d{14}\b/);
             if (cnpjNumMatch) {
               cnpjLinha = cnpjNumMatch[0];
@@ -257,27 +370,30 @@ class PuppeteerService {
         };
       });
       
-      console.log(`📊 Resultado da pesquisa: ${resultadoPesquisa.quantidade} cliente(s) encontrado(s)`);
+      console.log(`[Aba ${tab.id}] 📊 Encontrados: ${resultadoPesquisa.quantidade} cliente(s)`);
+      
+      // ========== VERIFICAR SE CLIENTE ESTÁ BLOQUEADO ==========
+      if (resultadoPesquisa.bloqueado) {
+        const nomeCliente = resultadoPesquisa.nomeClienteBloqueado || 'Cliente';
+        console.log(`[Aba ${tab.id}] 🚫 ${nomeCliente} está BLOQUEADO!`);
+        return { 
+          success: false, 
+          message: `🚫 Cliente "${nomeCliente}" está BLOQUEADO no sistema. Não é possível adicionar produtos.`,
+          bloqueado: true
+        };
+      }
+      // ==========================================================
       
       if (!resultadoPesquisa.encontrou) {
-        console.log('❌ Nenhum cliente encontrado com este CNPJ');
         return { success: false, message: 'Cliente não encontrado na pesquisa' };
       }
       
-      // Mostrar clientes encontrados
-      resultadoPesquisa.clientes.forEach((c, i) => {
-        console.log(`  ${i + 1}. ${c.titulo} - CNPJ: ${c.cnpj || 'N/A'}`);
-      });
-      
-      // ============================================================
-      // CORREÇÃO 3: Verificar se o CNPJ correto está nos resultados
-      // ============================================================
       const clienteCorreto = resultadoPesquisa.clientes.find(c => 
         c.cnpjNumeros === cnpjNumeros
       );
       
       if (clienteCorreto) {
-        console.log(`✅ Cliente correto encontrado: ${clienteCorreto.titulo}`);
+        console.log(`[Aba ${tab.id}] ✅ Cliente correto: ${clienteCorreto.titulo}`);
         return { 
           success: true, 
           message: 'Cliente encontrado',
@@ -285,8 +401,6 @@ class PuppeteerService {
           totalResultados: resultadoPesquisa.quantidade
         };
       } else if (resultadoPesquisa.quantidade === 1) {
-        // Se só tem 1 resultado, provavelmente é o correto
-        console.log(`⚠️ CNPJ não bateu exatamente, mas só tem 1 resultado: ${resultadoPesquisa.clientes[0].titulo}`);
         return { 
           success: true, 
           message: 'Cliente encontrado (único resultado)',
@@ -294,62 +408,61 @@ class PuppeteerService {
           totalResultados: 1
         };
       } else {
-        console.log('⚠️ Múltiplos resultados, mas CNPJ exato não encontrado');
         return { 
           success: true, 
-          message: 'Múltiplos resultados - será selecionado o correto',
+          message: 'Múltiplos resultados',
           clientes: resultadoPesquisa.clientes,
           totalResultados: resultadoPesquisa.quantidade
         };
       }
       
     } catch (error) {
-      console.error('❌ Erro ao pesquisar cliente:', error);
+      console.error(`[Aba ${tab.id}] ❌ Erro ao pesquisar:`, error);
       return { success: false, message: error.message };
     }
   }
 
-  // ============================================================
-  // FUNÇÃO CORRIGIDA - abrirDetalhesClientePorCNPJ
-  // ============================================================
-  async abrirDetalhesClientePorCNPJ(cnpj) {
+  async abrirDetalhesClientePorCNPJ(tab, cnpj) {
+    const page = tab.page;
+    const cnpjNumeros = cnpj.replace(/\D/g, '');
+    
     try {
-      console.log(`🔍 Abrindo detalhes do cliente com CNPJ: ${cnpj}`);
+      console.log(`[Aba ${tab.id}] 🔍 Abrindo detalhes do cliente CNPJ: ${cnpj}`);
       
-      // Normalizar CNPJ
-      const cnpjNumeros = cnpj.replace(/\D/g, '');
+      const pesquisaResult = await this.pesquisarClientePorCNPJ(tab, cnpj);
       
-      // 1. Pesquisar pelo CNPJ
-      const pesquisaResult = await this.pesquisarClientePorCNPJ(cnpj);
+      // Se pesquisa falhou OU cliente está bloqueado, retornar erro
       if (!pesquisaResult.success) {
         return pesquisaResult;
       }
       
-      // 2. Aguardar tabela estar pronta
-      await this.page.waitForSelector('table#dataTable tbody tr', { timeout: 10000 });
+      // Verificação extra de bloqueado (caso não tenha sido pego antes)
+      if (pesquisaResult.bloqueado) {
+        return pesquisaResult;
+      }
       
-      // Aguardar mais um pouco para garantir que tabela está estável
+      await page.waitForSelector('table#dataTable tbody tr', { timeout: 10000 });
       await new Promise(resolve => setTimeout(resolve, 1000));
       
-      // ============================================================
-      // CORREÇÃO: Clicar no cliente com o CNPJ CORRETO
-      // ============================================================
-      console.log('🔘 Procurando cliente com CNPJ correto para clicar...');
+      console.log(`[Aba ${tab.id}] 🔘 Clicando em Detalhes...`);
       
-      const botaoClicado = await this.page.evaluate((cnpjBuscado) => {
+      const botaoClicado = await page.evaluate((cnpjBuscado) => {
         const linhas = document.querySelectorAll('table#dataTable tbody tr');
         
         for (let linha of linhas) {
           const textoLinha = linha.innerText;
           
-          // Verificar se não é mensagem de "nenhum registro"
           if (textoLinha.includes('Nenhum registro') || 
-              textoLinha.includes('No data available') ||
-              textoLinha.includes('No matching records')) {
+              textoLinha.includes('No data available')) {
             continue;
           }
           
-          // Extrair CNPJ da linha
+          // ========== VERIFICAR SE BLOQUEADO ==========
+          if (textoLinha.includes('Bloqueado')) {
+            return { clicado: false, motivo: 'cliente_bloqueado', bloqueado: true };
+          }
+          // ============================================
+          
           let cnpjLinha = null;
           const cnpjMatch = textoLinha.match(/\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}/);
           if (cnpjMatch) {
@@ -361,11 +474,7 @@ class PuppeteerService {
             }
           }
           
-          // Comparar CNPJ
           if (cnpjLinha === cnpjBuscado) {
-            console.log('✅ CNPJ correto encontrado na linha!');
-            
-            // Procurar botão de detalhes
             const botaoDetalhes = linha.querySelector(
               'a.btn.btn-primary.btn-sm[title="Detalhes"], ' +
               'a.btn-primary[title="Detalhes"], ' +
@@ -377,7 +486,6 @@ class PuppeteerService {
               return { clicado: true, motivo: 'cnpj_exato' };
             }
             
-            // Tentar clicar no ícone fa-list
             const iconeDetalhes = linha.querySelector('.fa-list, .fa-eye');
             if (iconeDetalhes) {
               const link = iconeDetalhes.closest('a');
@@ -389,115 +497,69 @@ class PuppeteerService {
           }
         }
         
-        // Se não encontrou pelo CNPJ exato, clicar na primeira linha (se só tiver uma)
+        // Fallback: se só tem uma linha, clicar nela
         const linhasValidas = Array.from(linhas).filter(l => {
           const texto = l.innerText;
-          return !texto.includes('Nenhum registro') && 
-                 !texto.includes('No data available') &&
-                 !texto.includes('No matching records');
+          return !texto.includes('Nenhum registro') && !texto.includes('No data available');
         });
         
         if (linhasValidas.length === 1) {
-          const primeiraLinha = linhasValidas[0];
-          const botaoDetalhes = primeiraLinha.querySelector(
-            'a.btn.btn-primary.btn-sm[title="Detalhes"], ' +
-            'a.btn-primary[title="Detalhes"], ' +
-            'a[title="Detalhes"]'
-          );
+          // Verificar se está bloqueado antes de clicar
+          if (linhasValidas[0].innerText.includes('Bloqueado')) {
+            return { clicado: false, motivo: 'cliente_bloqueado', bloqueado: true };
+          }
           
+          const botaoDetalhes = linhasValidas[0].querySelector(
+            'a.btn.btn-primary.btn-sm[title="Detalhes"], a[title="Detalhes"]'
+          );
           if (botaoDetalhes) {
             botaoDetalhes.click();
             return { clicado: true, motivo: 'unico_resultado' };
-          }
-          
-          const iconeDetalhes = primeiraLinha.querySelector('.fa-list, .fa-eye');
-          if (iconeDetalhes) {
-            const link = iconeDetalhes.closest('a');
-            if (link) {
-              link.click();
-              return { clicado: true, motivo: 'unico_resultado_icone' };
-            }
           }
         }
         
         return { clicado: false, motivo: 'nao_encontrado' };
       }, cnpjNumeros);
       
+      if (botaoClicado.bloqueado) {
+        console.log(`[Aba ${tab.id}] 🚫 Cliente está BLOQUEADO! Não vai abrir detalhes.`);
+        return { 
+          success: false, 
+          message: '🚫 Cliente está BLOQUEADO no sistema. Não é possível adicionar produtos.',
+          bloqueado: true
+        };
+      }
+      
       if (botaoClicado.clicado) {
-        console.log(`✅ Botão "Detalhes" clicado! (motivo: ${botaoClicado.motivo})`);
+        console.log(`[Aba ${tab.id}] ✅ Detalhes clicado (${botaoClicado.motivo})`);
         
-        // Aguardar navegação
         try {
-          await this.page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 });
+          await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 });
         } catch (e) {
-          console.log('⚠️ Timeout na navegação, verificando URL...');
           await new Promise(resolve => setTimeout(resolve, 3000));
         }
         
-        console.log('📄 URL da página de detalhes:', this.page.url());
-        
         return { success: true, message: 'Detalhes do cliente abertos' };
       } else {
-        console.log('❌ Botão "Detalhes" não foi encontrado para o CNPJ especificado');
-        return { success: false, message: 'Botão Detalhes não encontrado para o CNPJ' };
+        return { success: false, message: 'Botão Detalhes não encontrado' };
       }
       
     } catch (error) {
-      console.error('❌ Erro ao abrir detalhes do cliente:', error);
+      console.error(`[Aba ${tab.id}] ❌ Erro:`, error);
       return { success: false, message: error.message };
     }
   }
 
-  async abrirDetalhesCliente(nomeCliente) {
+  async abrirModalNovoProduto(tab) {
+    const page = tab.page;
+    
     try {
-      console.log(`🔍 Procurando cliente "${nomeCliente}"...`);
+      console.log(`[Aba ${tab.id}] 🔘 Procurando botão "Novo"...`);
       
-      await this.page.waitForSelector('table#dataTable tbody tr', { timeout: 10000 });
+      await page.waitForSelector('table#dataTable', { timeout: 10000 });
       
-      const botaoClicado = await this.page.evaluate((nome) => {
-        const linhas = document.querySelectorAll('table#dataTable tbody tr');
-        
-        for (let linha of linhas) {
-          const strongElement = linha.querySelector('p.m-0 strong');
-          
-          if (strongElement && strongElement.innerText.trim() === nome) {
-            const botaoDetalhes = linha.querySelector('a.btn.btn-primary.btn-sm[title="Detalhes"]');
-            
-            if (botaoDetalhes) {
-              botaoDetalhes.click();
-              return true;
-            }
-          }
-        }
-        return false;
-      }, nomeCliente);
-      
-      if (botaoClicado) {
-        console.log(`✅ Botão "Detalhes" do cliente "${nomeCliente}" clicado!`);
-        
-        await this.page.waitForNavigation({ waitUntil: 'networkidle0' });
-        console.log('📄 URL da página de detalhes:', this.page.url());
-        
-        return { success: true, message: 'Detalhes do cliente abertos' };
-      } else {
-        console.log(`❌ Cliente "${nomeCliente}" não foi encontrado`);
-        return { success: false, message: 'Cliente não encontrado' };
-      }
-    } catch (error) {
-      console.error('❌ Erro ao abrir detalhes do cliente:', error);
-      return { success: false, message: error.message };
-    }
-  }
-
-  async abrirModalNovoProduto() {
-    try {
-      console.log('🔘 Procurando botão "Novo"...');
-      
-      await this.page.waitForSelector('table#dataTable', { timeout: 10000 });
-      
-      const botaoNovoClicado = await this.page.evaluate(() => {
+      const botaoNovoClicado = await page.evaluate(() => {
         const botaoNovo = document.querySelector('a.btn.btn-success.btn-icon-split.btn-sm[data-toggle="modal"][data-target^="#modal-"]');
-        
         if (botaoNovo) {
           botaoNovo.click();
           return true;
@@ -506,66 +568,49 @@ class PuppeteerService {
       });
       
       if (botaoNovoClicado) {
-        console.log('✅ Botão "Novo" clicado com sucesso!');
+        console.log(`[Aba ${tab.id}] ✅ Botão "Novo" clicado!`);
         
-        await this.page.waitForSelector('.modal.fade.show', { visible: true, timeout: 5000 });
-        console.log('✅ Modal de adicionar produto aberto!');
-        
+        await page.waitForSelector('.modal.fade.show', { visible: true, timeout: 5000 });
         await new Promise(resolve => setTimeout(resolve, 1000));
         
         return { success: true, message: 'Modal aberto' };
       } else {
-        console.log('❌ Botão "Novo" não foi encontrado');
         return { success: false, message: 'Botão Novo não encontrado' };
       }
     } catch (error) {
-      console.error('❌ Erro ao abrir modal:', error);
+      console.error(`[Aba ${tab.id}] ❌ Erro:`, error);
       return { success: false, message: error.message };
     }
   }
 
-  async adicionarProduto(nomeProduto) {
-    // Flag para rastrear se dialog foi confirmado
+  async adicionarProduto(tab, nomeProduto) {
+    const page = tab.page;
     let dialogConfirmado = false;
-    let dialogMensagem = '';
     
     try {
-      console.log(`🎯 Procurando produto "${nomeProduto}"...`);
+      console.log(`[Aba ${tab.id}] 🎯 Procurando produto "${nomeProduto}"...`);
       
-      // Configurar handler do dialog ANTES de clicar no produto
-      console.log('⚙️  Configurando handler para aceitar confirmação...');
+      page.removeAllListeners('dialog');
       
-      // Remover listeners anteriores
-      this.page.removeAllListeners('dialog');
-      
-      // Adicionar novo listener (apenas uma vez)
       const dialogHandler = async (dialog) => {
-        console.log('📢 Dialog detectado!');
-        console.log('📝 Tipo:', dialog.type());
-        console.log('💬 Mensagem:', dialog.message());
-        
-        dialogMensagem = dialog.message();
-        
+        console.log(`[Aba ${tab.id}] 📢 Dialog: ${dialog.message()}`);
         try {
           await dialog.accept();
           dialogConfirmado = true;
-          console.log('✅ Dialog confirmado!');
+          console.log(`[Aba ${tab.id}] ✅ Dialog confirmado!`);
         } catch (error) {
-          console.log('⚠️  Dialog já foi tratado');
-          dialogConfirmado = true; // Mesmo com erro, provavelmente foi confirmado
+          dialogConfirmado = true;
         }
       };
       
-      this.page.once('dialog', dialogHandler);
+      page.once('dialog', dialogHandler);
       
-      const produtoEncontrado = await this.page.evaluate((produto) => {
+      const produtoEncontrado = await page.evaluate((produto) => {
         const cards = document.querySelectorAll('.service-card, .card');
         
         for (let card of cards) {
           const titulo = card.querySelector('h3, h5, .card-title, strong');
-          
           if (titulo && titulo.innerText.trim() === produto) {
-            console.log('Produto encontrado:', produto);
             card.click();
             return true;
           }
@@ -574,27 +619,17 @@ class PuppeteerService {
       }, nomeProduto);
       
       if (produtoEncontrado) {
-        console.log(`✅ Produto "${nomeProduto}" clicado!`);
+        console.log(`[Aba ${tab.id}] ✅ Produto clicado!`);
         
-        console.log('⏳ Aguardando confirmação do dialog...');
         await new Promise(resolve => setTimeout(resolve, 2000));
         
-        // Se dialog foi confirmado, já é sucesso!
         if (dialogConfirmado) {
-          console.log(`🎉 SUCESSO! Dialog confirmado - Produto "${nomeProduto}" adicionado!`);
+          console.log(`[Aba ${tab.id}] 🎉 SUCESSO! Produto adicionado!`);
           
-          // Aguardar navegação (pode falhar, mas não importa)
           try {
-            await this.page.waitForNavigation({ 
-              waitUntil: 'networkidle0', 
-              timeout: 8000
-            });
-            console.log('✅ Navegação concluída!');
-          } catch (e) {
-            console.log('⏳ Navegação não detectada, mas dialog foi confirmado');
-          }
+            await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 8000 });
+          } catch (e) {}
           
-          // Aguardar página estabilizar
           await new Promise(resolve => setTimeout(resolve, 2000));
           
           return { 
@@ -603,88 +638,31 @@ class PuppeteerService {
           };
         }
         
-        // Se dialog não foi confirmado ainda, aguardar mais
-        console.log('⏳ Aguardando navegação após adicionar produto...');
         try {
-          await this.page.waitForNavigation({ 
-            waitUntil: 'networkidle0', 
-            timeout: 10000
-          });
-          console.log('✅ Navegação concluída!');
-        } catch (e) {
-          console.log('⏳ Navegação não detectada, verificando estado...');
-        }
+          await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 10000 });
+        } catch (e) {}
         
-        // Aguardar mais tempo para página estabilizar
-        console.log('⏳ Aguardando página estabilizar...');
         await new Promise(resolve => setTimeout(resolve, 3000));
         
-        // Verificar novamente se dialog foi confirmado durante a espera
         if (dialogConfirmado) {
-          console.log(`🎉 SUCESSO! Produto "${nomeProduto}" foi adicionado!`);
           return { 
             success: true, 
             message: `Produto "${nomeProduto}" adicionado com sucesso!` 
           };
         }
         
-        // Verificar se produto foi adicionado na tabela
-        console.log('🔍 Verificando se produto foi adicionado na tabela...');
-        let produtoNaTabela = false;
-        
-        try {
-          await this.page.waitForSelector('table#dataTable tbody tr', { timeout: 5000 });
-          
-          produtoNaTabela = await this.page.evaluate((produto) => {
-            const linhas = document.querySelectorAll('table#dataTable tbody tr');
-            
-            for (let linha of linhas) {
-              const strongElement = linha.querySelector('p.m-0 strong');
-              
-              if (strongElement && strongElement.innerText.trim() === produto) {
-                return true;
-              }
-            }
-            return false;
-          }, nomeProduto);
-          
-          if (produtoNaTabela) {
-            console.log(`🎉 SUCESSO! Produto "${nomeProduto}" encontrado na tabela!`);
-            return { 
-              success: true, 
-              message: `Produto "${nomeProduto}" adicionado com sucesso!` 
-            };
-          }
-        } catch (error) {
-          console.log('⚠️  Não foi possível verificar tabela, mas produto foi clicado');
-        }
-        
-        // Se chegou aqui sem erros, provavelmente funcionou
-        console.log(`✅ Produto "${nomeProduto}" foi processado`);
         return { 
           success: true, 
           message: `Produto "${nomeProduto}" adicionado com sucesso!` 
         };
         
       } else {
-        console.log(`❌ Produto "${nomeProduto}" não foi encontrado no modal`);
-        return { success: false, message: 'Produto não encontrado no modal' };
+        return { success: false, message: 'Produto já adicionado' };
       }
     } catch (error) {
-      console.error('❌ Erro ao adicionar produto:', error);
+      console.error(`[Aba ${tab.id}] ❌ Erro:`, error);
       
-      // Se o dialog foi confirmado antes do erro, é sucesso!
-      if (dialogConfirmado) {
-        console.log('✅ Dialog foi confirmado antes do erro - Considerando sucesso!');
-        return { 
-          success: true, 
-          message: `Produto "${nomeProduto}" adicionado com sucesso!` 
-        };
-      }
-      
-      // Se o erro foi de context destroyed, provavelmente foi adicionado
-      if (error.message.includes('Execution context was destroyed')) {
-        console.log('⚠️  Contexto destruído (navegação ocorreu) - Produto provavelmente foi adicionado');
+      if (dialogConfirmado || error.message.includes('Execution context was destroyed')) {
         return { 
           success: true, 
           message: `Produto "${nomeProduto}" adicionado com sucesso!` 
@@ -695,223 +673,222 @@ class PuppeteerService {
     }
   }
 
-  async adicionarProdutoParaClientePorCNPJ(cnpj, nomeProduto) {
+  // ============================================================
+  // MÉTODO PRINCIPAL - Adicionar produto (com pool)
+  // ============================================================
+  async adicionarProdutoParaClientePorCNPJ(userId, cnpj, nomeProduto) {
+    // 1. Tentar reservar uma aba
+    const tab = await this.reserveTab(userId);
+    
+    if (!tab) {
+      console.log('❌ Todas as abas estão ocupadas!');
+      return { 
+        success: false, 
+        message: '⏳ Todas as nossas sessões estão ocupadas no momento, tente mais tarde.',
+        allBusy: true
+      };
+    }
+    
     try {
-      // 1. Navegar para clientes
-      const navResult = await this.navegarParaClientes();
-      if (!navResult.success) return navResult;
+      console.log(`[Aba ${tab.id}] 🚀 Iniciando processo para ${userId}...`);
       
-      // 2. Abrir detalhes do cliente POR CNPJ (com pesquisa)
-      const detalhesResult = await this.abrirDetalhesClientePorCNPJ(cnpj);
+      // 2. Garantir que está na página de clientes
+      await this.navegarParaClientesTab(tab);
+      
+      // 3. Abrir detalhes do cliente
+      const detalhesResult = await this.abrirDetalhesClientePorCNPJ(tab, cnpj);
       if (!detalhesResult.success) {
-        await this.voltarParaClientes();
+        await this.releaseTab(tab);
         return detalhesResult;
       }
       
-      // 3. Abrir modal de novo produto
-      const modalResult = await this.abrirModalNovoProduto();
+      // 4. Abrir modal
+      const modalResult = await this.abrirModalNovoProduto(tab);
       if (!modalResult.success) {
-        await this.voltarParaClientes();
+        await this.releaseTab(tab);
         return modalResult;
       }
       
-      // 4. Adicionar produto
-      const produtoResult = await this.adicionarProduto(nomeProduto);
+      // 5. Adicionar produto
+      const produtoResult = await this.adicionarProduto(tab, nomeProduto);
       
-      // 5. SEMPRE voltar para página de clientes (sucesso ou erro)
-      console.log('🔙 Voltando para página de clientes...');
-      await new Promise(resolve => setTimeout(resolve, 3000));
-      await this.voltarParaClientes();
+      // 6. Liberar aba
+      await this.releaseTab(tab);
       
       return produtoResult;
+      
     } catch (error) {
-      console.error('❌ Erro ao adicionar produto para cliente:', error);
-      
-      try {
-        await this.voltarParaClientes();
-      } catch (e) {
-        console.error('❌ Erro ao voltar para clientes:', e);
-      }
-      
+      console.error(`[Aba ${tab.id}] ❌ Erro geral:`, error);
+      await this.releaseTab(tab);
       return { success: false, message: error.message };
     }
   }
 
-  async adicionarProdutoParaCliente(nomeCliente, nomeProduto) {
-    try {
-      // 1. Navegar para clientes
-      const navResult = await this.navegarParaClientes();
-      if (!navResult.success) return navResult;
-      
-      // 2. Abrir detalhes do cliente
-      const detalhesResult = await this.abrirDetalhesCliente(nomeCliente);
-      if (!detalhesResult.success) {
-        await this.voltarParaClientes();
-        return detalhesResult;
-      }
-      
-      // 3. Abrir modal de novo produto
-      const modalResult = await this.abrirModalNovoProduto();
-      if (!modalResult.success) {
-        await this.voltarParaClientes();
-        return modalResult;
-      }
-      
-      // 4. Adicionar produto
-      const produtoResult = await this.adicionarProduto(nomeProduto);
-      
-      // 5. SEMPRE voltar para página de clientes (sucesso ou erro)
-      console.log('🔙 Voltando para página de clientes...');
-      await this.voltarParaClientes();
-      
-      return produtoResult;
-    } catch (error) {
-      console.error('❌ Erro ao adicionar produto para cliente:', error);
-      
-      // Garantir que volta para clientes mesmo com erro
-      try {
-        await this.voltarParaClientes();
-      } catch (e) {
-        console.error('❌ Erro ao voltar para clientes:', e);
-      }
-      
-      return { success: false, message: error.message };
+  // ============================================================
+  // EXTRAIR CLIENTES (usa aba disponível)
+  // ============================================================
+  async extrairClientes(userId) {
+    const tab = await this.reserveTab(userId);
+    
+    if (!tab) {
+      return { 
+        success: false, 
+        message: '⏳ Todas as nossas sessões estão ocupadas no momento, tente mais tarde.',
+        allBusy: true
+      };
     }
-  }
-
-  async voltarParaClientes() {
+    
     try {
-      console.log('🔙 Voltando para página de clientes...');
+      const page = tab.page;
       
-      // Verificar se já está na página de clientes
-      const urlAtual = this.page.url();
-      if (urlAtual.includes('/Clientes') && !urlAtual.includes('guid_customer')) {
-        console.log('✅ Já está na página de Clientes');
-        return { success: true };
-      }
+      await this.navegarParaClientesTab(tab);
+      await page.waitForSelector('table#dataTable tbody tr', { timeout: 10000 });
       
-      // Método 1: Clicar no menu "Clientes"
-      try {
-        const menuClicado = await this.page.evaluate(() => {
-          const link = document.querySelector('a[href="/Clientes"]');
-          if (link) {
-            link.click();
-            return true;
+      const clientes = await page.evaluate(() => {
+        const data = [];  
+        const linhas = document.querySelectorAll('table#dataTable tbody tr');
+        
+        linhas.forEach((linha) => {
+          const titulo = linha.querySelector('p.m-0 strong')?.innerText.trim();
+          const textoCompleto = linha.innerText;
+          
+          let cnpj = null;
+          let cnpjMatch = textoCompleto.match(/\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}/);
+          if (cnpjMatch) {
+            cnpj = cnpjMatch[0];
+          } else {
+            cnpjMatch = textoCompleto.match(/\b\d{14}\b/);
+            if (cnpjMatch) {
+              const num = cnpjMatch[0];
+              cnpj = `${num.substr(0,2)}.${num.substr(2,3)}.${num.substr(5,3)}/${num.substr(8,4)}-${num.substr(12,2)}`;
+            }
           }
-          return false;
+          
+          if (titulo) {
+            data.push({ titulo, cnpj });
+          }
         });
         
-        if (menuClicado) {
-          await this.page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 10000 });
-          console.log('✅ Voltou para página de Clientes via menu');
-          return { success: true };
-        }
-      } catch (e) {
-        console.log('⚠️ Erro ao clicar no menu, tentando navegação direta...');
-      }
+        return data;
+      });
       
-      // Método 2: Navegação direta
-      try {
-        await this.page.goto(CLIENTES_URL, { waitUntil: 'networkidle0', timeout: 15000 });
-        console.log('✅ Navegou para página de Clientes');
-        return { success: true };
-      } catch (e) {
-        console.log('⚠️ Erro na navegação direta:', e.message);
-      }
+      await this.releaseTab(tab);
       
-      return { success: false, message: 'Não foi possível voltar para clientes' };
+      console.log(`✅ ${clientes.length} clientes extraídos`);
+      return { success: true, data: clientes };
+      
     } catch (error) {
-      console.error('❌ Erro ao voltar para clientes:', error);
+      console.error('❌ Erro ao extrair clientes:', error);
+      await this.releaseTab(tab);
       return { success: false, message: error.message };
     }
   }
-
-  async extrairClientesCompleto() {
-    try {
-      await this.init();
-      
-      const loginResult = await this.login();
-      if (!loginResult.success) {
-        await this.close();
-        return loginResult;
-      }
-      
-      const navResult = await this.navegarParaClientes();
-      if (!navResult.success) {
-        await this.close();
-        return navResult;
-      }
-      
-      const clientesResult = await this.extrairClientes();
-      await this.close();
-      
-      return clientesResult;
-    } catch (error) {
-      await this.close();
-      return { success: false, message: error.message };
+// ============================================================
+  // GERAR CHAVE NUVEM FISCAL (com pool)
+  // ============================================================
+  async gerarChaveNuvemFiscalParaClientePorCNPJ(userId, cnpj, descricao = 'Chave automática') {
+    const tab = await this.reserveTab(userId);
+    
+    if (!tab) {
+      return { 
+        success: false, 
+        message: '⏳ Todas as nossas sessões estão ocupadas no momento, tente mais tarde.',
+        allBusy: true
+      };
     }
-  }
-
-  async abrirProdutoNuvemFiscal() {
+    
+    const page = tab.page;
+    
     try {
-      console.log('🔍 Procurando produto "Nuvem Fiscal API" na tabela...');
+      console.log(`[Aba ${tab.id}] 🔑 Gerando chave Nuvem Fiscal para CNPJ: ${cnpj}`);
       
-      await this.page.waitForSelector('table#dataTable tbody tr', { timeout: 10000 });
+      // 1. Navegar para clientes
+      await this.navegarParaClientesTab(tab);
       
-      const produtoEncontrado = await this.page.evaluate(() => {
+      // 2. Abrir detalhes do cliente
+      const detalhesResult = await this.abrirDetalhesClientePorCNPJ(tab, cnpj);
+      if (!detalhesResult.success) {
+        await this.releaseTab(tab);
+        return detalhesResult;
+      }
+      
+      // 3. Aguardar carregar a tabela de serviços do cliente
+      console.log(`[Aba ${tab.id}] 📋 Procurando serviço Nuvem Fiscal API...`);
+      await page.waitForSelector('table#dataTable tbody tr', { timeout: 15000 });
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // 4. Clicar em "Detalhes" do Nuvem Fiscal API
+      const nuvemFiscalEncontrado = await page.evaluate(() => {
         const linhas = document.querySelectorAll('table#dataTable tbody tr');
         
         for (let linha of linhas) {
-          const strongElement = linha.querySelector('p.m-0 strong');
+          const textoLinha = linha.innerText;
           
-          if (strongElement && strongElement.innerText.trim() === 'Nuvem Fiscal API') {
-            // Verificar se está ativo
+          // Verificar se é a linha do Nuvem Fiscal API
+          if (textoLinha.includes('Nuvem Fiscal API')) {
+            // Verificar se está Ativo
             const badge = linha.querySelector('.badge');
-            if (badge && badge.innerText.trim() === 'Ativo') {
-              // Clicar no botão de detalhes
-              const botaoDetalhes = linha.querySelector('a.btn-primary[title="Detalhes"]');
+            const estaAtivo = badge && badge.innerText.trim() === 'Ativo';
+            
+            if (estaAtivo) {
+              // Clicar no botão Detalhes
+              const botaoDetalhes = linha.querySelector('a[title="Detalhes"], a.btn-primary');
               if (botaoDetalhes) {
                 botaoDetalhes.click();
-                return true;
+                return { encontrado: true, ativo: true };
               }
+            } else {
+              return { encontrado: true, ativo: false };
             }
           }
         }
-        return false;
+        return { encontrado: false, ativo: false };
       });
       
-      if (produtoEncontrado) {
-        console.log('✅ Produto "Nuvem Fiscal API" encontrado e está ativo!');
-        
-        await this.page.waitForNavigation({ waitUntil: 'networkidle0' });
-        console.log('📄 URL da página Nuvem Fiscal:', this.page.url());
-        
-        return { success: true, message: 'Abriu página Nuvem Fiscal' };
-      } else {
-        console.log('❌ Produto "Nuvem Fiscal API" não está ativo ou não existe');
-        return { success: false, message: 'Nuvem Fiscal não está ativo' };
+      if (!nuvemFiscalEncontrado.encontrado) {
+        await this.releaseTab(tab);
+        return { success: false, message: '❌ Serviço "Nuvem Fiscal API" não encontrado para este cliente' };
       }
-    } catch (error) {
-      console.error('❌ Erro ao abrir Nuvem Fiscal:', error);
-      return { success: false, message: error.message };
-    }
-  }
-
-  async gerarChaveAcessoNuvemFiscal(descricao = 'Chave gerada automaticamente') {
-    try {
-      console.log('🔑 Gerando chave de acesso para Nuvem Fiscal...');
       
-      // Clicar no botão "Novo" (gerar chave)
-      console.log('🔘 Procurando botão para gerar chave...');
+      if (!nuvemFiscalEncontrado.ativo) {
+        await this.releaseTab(tab);
+        return { success: false, message: '❌ Serviço "Nuvem Fiscal API" está INATIVO para este cliente' };
+      }
       
-      await this.page.waitForSelector('i.fa-plus', { timeout: 5000 });
+      console.log(`[Aba ${tab.id}] ✅ Nuvem Fiscal encontrado! Abrindo detalhes...`);
       
-      const botaoNovoClicado = await this.page.evaluate(() => {
-        const botoes = document.querySelectorAll('i.fa-plus');
-        for (let botao of botoes) {
-          const parent = botao.closest('a');
-          if (parent) {
-            parent.click();
+      // 5. Aguardar navegação para página de serviços
+      try {
+        await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 });
+      } catch (e) {
+        await new Promise(resolve => setTimeout(resolve, 3000));
+      }
+      
+      // 6. Aguardar carregar a página de chaves
+      console.log(`[Aba ${tab.id}] 🔍 Procurando botão de adicionar chave...`);
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // 7. Clicar no botão de adicionar nova chave (ícone +)
+      const botaoNovoClicado = await page.evaluate(() => {
+        // Tentar encontrar o botão de adicionar chave
+        // Baseado no seu código gravado: div:nth-of-type(3) > div.card-body i
+        const seletores = [
+          '#dataTableChavesAcesso thead th a i.fa-plus',
+          'a i.fa-plus',
+          'i.fa-plus',
+          'a[data-toggle="modal"] i',
+          '.card-body a i.fa-plus'
+        ];
+        
+        for (let seletor of seletores) {
+          const icone = document.querySelector(seletor);
+          if (icone) {
+            const link = icone.closest('a');
+            if (link) {
+              link.click();
+              return true;
+            }
+            icone.click();
             return true;
           }
         }
@@ -919,123 +896,142 @@ class PuppeteerService {
       });
       
       if (!botaoNovoClicado) {
-        return { success: false, message: 'Botão de gerar chave não encontrado' };
+        await this.releaseTab(tab);
+        return { success: false, message: '❌ Botão de adicionar chave não encontrado' };
       }
       
-      console.log('✅ Botão clicado, aguardando modal...');
+      console.log(`[Aba ${tab.id}] ✅ Botão + clicado! Aguardando modal...`);
       
-      // Aguardar modal aparecer
-      await this.page.waitForSelector('#DescricaoChaveId', { visible: true, timeout: 5000 });
+      // 8. Aguardar o modal abrir
+      await page.waitForSelector('#DescricaoChaveId', { visible: true, timeout: 10000 });
+      await new Promise(resolve => setTimeout(resolve, 1000));
       
-      // Preencher descrição
-      console.log(`📝 Preenchendo descrição: "${descricao}"...`);
-      await this.page.click('#DescricaoChaveId');
-      await this.page.type('#DescricaoChaveId', descricao);
+      // 9. Preencher a descrição da chave
+      console.log(`[Aba ${tab.id}] 📝 Preenchendo descrição: "${descricao}"`);
+      await page.click('#DescricaoChaveId');
+      await page.evaluate(() => {
+        document.querySelector('#DescricaoChaveId').value = '';
+      });
+      await page.type('#DescricaoChaveId', descricao, { delay: 50 });
       
-      // Clicar no botão "Gerar Chave"
-      console.log('🔘 Clicando em "Gerar Chave"...');
+      // 10. Clicar no botão "Gerar Chave"
+      console.log(`[Aba ${tab.id}] 🔘 Clicando em "Gerar Chave"...`);
       
-      const botaoGerarClicado = await this.page.evaluate(() => {
-        const botoes = document.querySelectorAll('button.btn-primary');
+      const botaoGerarClicado = await page.evaluate(() => {
+        // Procurar botão "Gerar Chave"
+        const botoes = document.querySelectorAll('button.btn-primary, button[type="submit"]');
         for (let botao of botoes) {
-          if (botao.innerText.includes('Gerar Chave')) {
+          if (botao.innerText.includes('Gerar Chave') || botao.innerText.includes('Gerar')) {
             botao.click();
             return true;
           }
         }
+        
+        // Tentar pelo formulário
+        const form = document.querySelector('#FormAddChaveAcesso');
+        if (form) {
+          const submitBtn = form.querySelector('button[type="submit"], button.btn-primary');
+          if (submitBtn) {
+            submitBtn.click();
+            return true;
+          }
+        }
+        
         return false;
       });
       
       if (!botaoGerarClicado) {
-        return { success: false, message: 'Botão Gerar Chave não encontrado' };
+        await this.releaseTab(tab);
+        return { success: false, message: '❌ Botão "Gerar Chave" não encontrado' };
       }
       
-      console.log('⏳ Aguardando chave ser gerada...');
-      await this.page.waitForNavigation({ waitUntil: 'networkidle0' });
+      console.log(`[Aba ${tab.id}] ⏳ Aguardando chaves serem geradas...`);
       
-      // Aguardar tabela atualizar
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // 11. Aguardar a página recarregar/atualizar
+      try {
+        await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 });
+      } catch (e) {
+        // Se não houver navegação, apenas aguardar
+        await new Promise(resolve => setTimeout(resolve, 3000));
+      }
       
-      // Extrair as chaves (Access Key e Secret Key)
-      console.log('📋 Extraindo chaves geradas...');
+      await new Promise(resolve => setTimeout(resolve, 3000));
       
-      const chaves = await this.page.evaluate(() => {
-        const linhas = document.querySelectorAll('#dataTableChavesAcesso tbody tr');
+      // 12. Extrair as chaves da tabela
+      console.log(`[Aba ${tab.id}] 📋 Extraindo chaves geradas...`);
+      
+      
+      console.log(`[Aba ${tab.id}] 👁️ Clicando nos botões para revelar chaves...`);
+      
+      const botoesOlho = await page.$$('[id^="OlhoOculto-"]');
+console.log(`Encontrados ${botoesOlho.length} botões de olho`);
+
+for (const botao of botoesOlho) {
+  await botao.click();
+  await new Promise(resolve => setTimeout(resolve, 500));
+}
+      
+      // Aguardar as chaves serem reveladas
+      await new Promise(resolve => setTimeout(resolve, 3600));
+
+      const chaves = await page.evaluate(() => {
+        // Aguardar a tabela de chaves
+        const tabela = document.querySelector('#dataTableChavesAcesso');
+        if (!tabela) return null;
+        
+        const linhas = tabela.querySelectorAll('tbody tr');
         if (linhas.length === 0) return null;
         
+        // Pegar a primeira linha (chave mais recente)
         const primeiraLinha = linhas[0];
         const colunas = primeiraLinha.querySelectorAll('td');
         
-        if (colunas.length >= 3) {
-          return {
-            descricao: colunas[0]?.innerText.trim(),
-            accessKey: colunas[1]?.innerText.trim(),
-            secretKey: colunas[2]?.innerText.trim()
-          };
-        }
-        return null;
+        if (colunas.length < 3) return null;
+        
+        // Extrair os valores
+        // Coluna 0: Descrição
+        // Coluna 1: Access Key (pode ter botões de copiar junto)
+        // Coluna 2: Secret Key (pode ter botões de copiar junto)
+        
+        const descricao = colunas[0]?.innerText.trim();
+        
+        // Para Access Key e Secret Key, pegar apenas o texto, não os ícones
+        
+        let accessKey = colunas[1]?.innerText.trim();
+        let secretKey = colunas[2]?.innerText.trim();
+        
+        // Limpar possíveis textos extras (remover espaços e quebras de linha)
+        accessKey = accessKey.split('\n')[0].trim();
+        secretKey = secretKey.split('\n')[0].trim();
+        
+        return {
+          descricao,
+          accessKey,
+          secretKey
+        };
       });
       
-      if (chaves) {
-        console.log('🎉 SUCESSO! Chaves geradas:');
-        console.log('  Descrição:', chaves.descricao);
-        console.log('  Access Key:', chaves.accessKey);
-        console.log('  Secret Key:', chaves.secretKey);
-        
+      await this.releaseTab(tab);
+      
+      if (chaves && chaves.accessKey && chaves.secretKey) {
+        console.log(`[Aba ${tab.id}] ✅ Chaves extraídas com sucesso!`);
         return { 
           success: true, 
-          message: 'Chaves geradas com sucesso',
-          data: chaves
+          message: '✅ Chaves geradas com sucesso!',
+          data: {
+            descricao: chaves.descricao,
+            accessKey: chaves.accessKey,
+            secretKey: chaves.secretKey
+          }
         };
       } else {
-        return { success: false, message: 'Não foi possível extrair as chaves' };
+        return { success: false, message: '❌ Não foi possível extrair as chaves. Verifique manualmente no portal.' };
       }
       
     } catch (error) {
-      console.error('❌ Erro ao gerar chave:', error);
-      return { success: false, message: error.message };
-    }
-  }
-
-  async gerarChaveNuvemFiscalParaCliente(nomeCliente, descricaoChave = 'Chave automática') {
-    try {
-      // 1. Navegar para clientes
-      const navResult = await this.navegarParaClientes();
-      if (!navResult.success) return navResult;
-      
-      // 2. Abrir detalhes do cliente
-      const detalhesResult = await this.abrirDetalhesCliente(nomeCliente);
-      if (!detalhesResult.success) {
-        await this.voltarParaClientes();
-        return detalhesResult;
-      }
-      
-      // 3. Abrir produto Nuvem Fiscal
-      const nuvemFiscalResult = await this.abrirProdutoNuvemFiscal();
-      if (!nuvemFiscalResult.success) {
-        await this.voltarParaClientes();
-        return nuvemFiscalResult;
-      }
-      
-      // 4. Gerar chave de acesso
-      const chaveResult = await this.gerarChaveAcessoNuvemFiscal(descricaoChave);
-      
-      // 5. SEMPRE voltar para clientes
-      console.log('🔙 Voltando para página de clientes...');
-      await this.voltarParaClientes();
-      
-      return chaveResult;
-    } catch (error) {
-      console.error('❌ Erro ao gerar chave para cliente:', error);
-      
-      // Garantir que volta para clientes mesmo com erro
-      try {
-        await this.voltarParaClientes();
-      } catch (e) {
-        console.error('❌ Erro ao voltar para clientes:', e);
-      }
-      
-      return { success: false, message: error.message };
+      console.error(`[Aba ${tab.id}] ❌ Erro:`, error);
+      await this.releaseTab(tab);
+      return { success: false, message: `❌ Erro: ${error.message}` };
     }
   }
 
@@ -1043,7 +1039,7 @@ class PuppeteerService {
     if (this.browser) {
       await this.browser.close();
       this.browser = null;
-      this.page = null;
+      this.tabs = [];
     }
   }
 }
