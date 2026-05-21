@@ -1,7 +1,7 @@
 import { Client, GatewayIntentBits, EmbedBuilder, SlashCommandBuilder } from 'discord.js';
 import { REST } from '@discordjs/rest';
 import { Routes } from 'discord-api-types/v10';
-import PuppeteerService from './PuppeteerService_new.js';
+import PuppeteerService from './PuppeteerService.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -46,12 +46,29 @@ const commands = [
         .setDescription('Nome do produto a ser adicionado')
         .setRequired(true)
         .addChoices(
-          { name: 'Nuvem Fiscal API', value: 'Nuvem Fiscal API' },
-          { name: 'Relay Server', value: 'Relay Server' },
-          { name: 'Tá na Mão', value: 'Tá na Mão' },
-          { name: 'Softcom Backup', value: 'Softcom Backup' },
-          { name: 'Integração Contábil', value: 'Integração Contábil' },
+          { name: 'Agendar.Ai', value: 'Agendar.Ai' },
+          { name: 'API Cobrança', value: 'API Cobrança' },
+          { name: 'Catálogo Digital', value: 'Catálogo Digital' },
+          { name: 'Certificado Digital', value: 'Certificado Digital' },
+          { name: 'Catálogo Digital V2', value: 'Catálogo Digital V2' },
+          { name: 'Collector', value: 'Collector' },
+          { name: 'Conciliador de Cartões', value: 'Conciliador de Cartões' },
+          { name: 'DDA - Nuvem de Boletos', value: 'DDA - Nuvem de Boletos' },
           { name: 'Drica IA (WhatsApp)', value: 'Drica IA (WhatsApp)' },
+          { name: 'EDocs (NFs-e)', value: 'EDocs (NFs-e)' },
+          { name: 'Integration Marketplace', value: 'Integration Marketplace' },
+          { name: 'Integração Contábil', value: 'Integração Contábil' },
+          { name: 'Nuvem Fiscal API', value: 'Nuvem Fiscal API' },
+          { name: 'QueroBonus', value: 'QueroBonus' },
+          { name: 'Relay Server', value: 'Relay Server' },
+          { name: 'Softcom Backup', value: 'Softcom Backup' },
+          { name: 'SoftcomPay', value: 'SoftcomPay' },
+          { name: 'SoftcomShip', value: 'SoftcomShip' },
+          { name: 'SoftConnect', value: 'SoftConnect' },
+          { name: 'SoftDelivery', value: 'SoftDelivery' },
+          { name: 'Tá na Mão', value: 'Tá na Mão' },
+          { name: 'Venda Mais CRM', value: 'Venda Mais CRM' },
+          { name: 'Vendas360', value: 'Vendas360' },
         )),
   
   new SlashCommandBuilder()

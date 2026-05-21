@@ -33,19 +33,7 @@ class PuppeteerService {
   headless: 'new', 
   userDataDir: USER_DATA_PATH,
   executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe',
-  protocolTimeout: 120000, // 120s: evita "callFunctionOn timed out" sob carga simultânea
-  args: [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    // Sem bringToFront(), as abas ficam em background. Por padrão o Chrome
-    // desacelera timers/animações de abas em background, o que atrasa coisas
-    // como a animação do modal Bootstrap. Estas flags desativam esse throttling
-    // para que todas as abas rodem em velocidade normal simultaneamente.
-    '--disable-background-timer-throttling',
-    '--disable-backgrounding-occluded-windows',
-    '--disable-renderer-backgrounding',
-    '--disable-features=CalculateNativeWinOcclusion'
-  ]
+  args: ['--no-sandbox', '--disable-setuid-sandbox']
 });
    
 
@@ -110,26 +98,9 @@ class PuppeteerService {
     const currentUrl = page.url();
     
     if (currentUrl.startsWith(LOGIN_URL)) {
-      // Preencher credenciais via evaluate (isolado por aba) em vez de
-      // page.type, que disputa o canal de input global em login simultâneo.
-      await page.evaluate((user, pass) => {
-        const u = document.querySelector('#UserName');
-        const p = document.querySelector('#Password');
-        const setter = Object.getOwnPropertyDescriptor(
-          window.HTMLInputElement.prototype, 'value'
-        ).set;
-        if (u) {
-          setter.call(u, user);
-          u.dispatchEvent(new Event('input', { bubbles: true }));
-          u.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-        if (p) {
-          setter.call(p, pass);
-          p.dispatchEvent(new Event('input', { bubbles: true }));
-          p.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-      }, PORTAL_USERNAME, PORTAL_PASSWORD);
-
+      await page.type('#UserName', PORTAL_USERNAME);
+      await page.type('#Password', PORTAL_PASSWORD);
+      
       await Promise.all([
         page.click('button[type="submit"]'),
         page.waitForNavigation({ waitUntil: 'networkidle0' }),
@@ -187,28 +158,25 @@ class PuppeteerService {
   }
 
   // Reservar uma aba para uso
-  // IMPORTANTE: este método é SÍNCRONO de propósito. Node é single-thread,
-  // então enquanto não houver `await` entre getAvailableTab() e a marcação
-  // busy=true, duas requisições simultâneas NÃO conseguem pegar a mesma aba.
-  // Qualquer `await` aqui reabre a janela de corrida (race condition).
-  reserveTab(userId) {
+  async reserveTab(userId) {
     const tab = this.getAvailableTab();
-
+    
     if (!tab) {
       return null;
     }
-
+    
     tab.busy = true;
     tab.currentUser = userId;
     tab.lastUsed = new Date();
     tab.status = 'working';
-
-    // NÃO usar bringToFront() aqui: em chamadas simultâneas, várias abas
-    // disputam o foco do navegador. O Chrome só mantém UMA aba em foreground,
-    // e desacelera (throttle) as demais em background, travando navegações,
-    // dialogs e timeouts. Em scraping cada `page` roda de forma independente
-    // sem precisar estar visível, então bringToFront é desnecessário e nocivo.
-
+    
+    // IMPORTANTE: Trazer a aba para frente (necessário no modo headless: false)
+    try {
+      await tab.page.bringToFront();
+    } catch (e) {
+      console.log(`⚠️ Não foi possível trazer aba ${tab.id} para frente`);
+    }
+    
     console.log(`🔒 Aba ${tab.id} reservada para usuário ${userId}`);
     return tab;
   }
@@ -218,31 +186,19 @@ class PuppeteerService {
     if (!tab) return;
     
     console.log(`🔓 Liberando aba ${tab.id}...`);
-
+    
     try {
-      // Remover qualquer listener de dialog pendente de uma operação anterior,
-      // para não interferir na próxima chamada que usar esta aba.
-      try {
-        tab.page.removeAllListeners('dialog');
-      } catch (e) {}
-
       // Voltar para página de clientes
       await this.navegarParaClientesTab(tab);
       
-      // Limpar campo de pesquisa se existir (via evaluate, sem keyboard)
+      // Limpar campo de pesquisa se existir
       try {
         const page = tab.page;
-        await page.evaluate(() => {
-          const input = document.querySelector('#dt-search-0');
-          if (input) {
-            const setter = Object.getOwnPropertyDescriptor(
-              window.HTMLInputElement.prototype, 'value'
-            ).set;
-            setter.call(input, '');
-            input.dispatchEvent(new Event('input', { bubbles: true }));
-            input.dispatchEvent(new Event('keyup', { bubbles: true }));
-          }
-        });
+        const searchField = await page.$('#dt-search-0');
+        if (searchField) {
+          await page.click('#dt-search-0', { clickCount: 3 });
+          await page.keyboard.press('Backspace');
+        }
       } catch (e) {
         // Ignorar erro de limpeza
       }
@@ -319,41 +275,26 @@ class PuppeteerService {
       console.log(`[Aba ${tab.id}] 📋 CNPJ normalizado: ${cnpjNumeros}`);
       
       await page.waitForSelector('#dt-search-0', { visible: true, timeout: 10000 });
-
-      // Limpar e preencher o campo de pesquisa SEM usar page.keyboard.
-      // page.keyboard envia eventos de input para a aba em foco no nível do
-      // navegador, então em chamadas simultâneas duas abas disputam o mesmo
-      // canal de input do Chrome e uma trava (Runtime.callFunctionOn timed out).
-      // Fazer via evaluate é isolado por execution context de cada page.
-      console.log(`[Aba ${tab.id}] 🧹 Limpando e preenchendo campo de pesquisa...`);
-      await page.evaluate((valor) => {
-        const input = document.querySelector('#dt-search-0');
-        if (!input) return;
-
-        // Setar valor usando o setter nativo para garantir que frameworks
-        // (React/jQuery) detectem a mudança.
-        const setter = Object.getOwnPropertyDescriptor(
-          window.HTMLInputElement.prototype, 'value'
-        ).set;
-        setter.call(input, '');
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-
-        setter.call(input, valor);
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.dispatchEvent(new Event('keyup', { bubbles: true }));
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-
-        // Reforço: se for DataTables com jQuery, aplicar o filtro pela API.
-        try {
-          if (window.jQuery && jQuery.fn.dataTable) {
-            const tabela = jQuery('#dataTable');
-            if (tabela.length && jQuery.fn.dataTable.isDataTable(tabela)) {
-              tabela.DataTable().search(valor).draw();
-            }
-          }
-        } catch (e) {}
-      }, cnpjNumeros);
-
+      
+      // Limpar campo de pesquisa
+      console.log(`[Aba ${tab.id}] 🧹 Limpando campo de pesquisa...`);
+      await page.click('#dt-search-0', { clickCount: 3 });
+      await page.keyboard.press('Backspace');
+      await new Promise(resolve => setTimeout(resolve, 300));
+      
+      await page.focus('#dt-search-0');
+      await page.keyboard.down('Control');
+      await page.keyboard.press('a');
+      await page.keyboard.up('Control');
+      await page.keyboard.press('Delete');
+      await new Promise(resolve => setTimeout(resolve, 300));
+      
+      console.log(`[Aba ${tab.id}] 📝 Digitando CNPJ...`);
+      await page.type('#dt-search-0', cnpjNumeros, { delay: 50 });
+      
+      console.log(`[Aba ${tab.id}] ⏎ Pressionando Enter...`);
+      await page.keyboard.press('Enter');
+      
       console.log(`[Aba ${tab.id}] ⏳ Aguardando resultados (5 segundos)...`);
       await new Promise(resolve => setTimeout(resolve, 5000));
       
@@ -628,43 +569,10 @@ class PuppeteerService {
       
       if (botaoNovoClicado) {
         console.log(`[Aba ${tab.id}] ✅ Botão "Novo" clicado!`);
-
-        // Esperar o modal ficar funcionalmente visível, sem depender da
-        // animação CSS (.modal.fade.show só recebe 'show' ao fim da transição,
-        // que o Chrome desacelera em abas de background). Aceitamos qualquer
-        // .modal com display != none.
-        try {
-          await page.waitForFunction(() => {
-            const modais = document.querySelectorAll('.modal');
-            for (const m of modais) {
-              const visivel = window.getComputedStyle(m).display !== 'none'
-                && m.offsetParent !== null;
-              if (visivel || m.classList.contains('show')) return true;
-            }
-            return false;
-          }, { timeout: 10000 });
-        } catch (e) {
-          // Fallback: forçar a exibição do modal via jQuery/Bootstrap, caso a
-          // animação tenha ficado presa pelo throttling.
-          console.log(`[Aba ${tab.id}] ⚠️ Modal não apareceu, forçando abertura...`);
-          await page.evaluate(() => {
-            const botao = document.querySelector('a.btn.btn-success.btn-icon-split.btn-sm[data-toggle="modal"][data-target^="#modal-"]');
-            const target = botao && botao.getAttribute('data-target');
-            if (target && window.jQuery) {
-              jQuery(target).modal('show');
-            }
-          });
-          await page.waitForFunction(() => {
-            const modais = document.querySelectorAll('.modal');
-            for (const m of modais) {
-              if (window.getComputedStyle(m).display !== 'none') return true;
-            }
-            return false;
-          }, { timeout: 5000 });
-        }
-
+        
+        await page.waitForSelector('.modal.fade.show', { visible: true, timeout: 5000 });
         await new Promise(resolve => setTimeout(resolve, 1000));
-
+        
         return { success: true, message: 'Modal aberto' };
       } else {
         return { success: false, message: 'Botão Novo não encontrado' };
@@ -770,7 +678,7 @@ class PuppeteerService {
   // ============================================================
   async adicionarProdutoParaClientePorCNPJ(userId, cnpj, nomeProduto) {
     // 1. Tentar reservar uma aba
-    const tab = this.reserveTab(userId);
+    const tab = await this.reserveTab(userId);
     
     if (!tab) {
       console.log('❌ Todas as abas estão ocupadas!');
@@ -820,7 +728,7 @@ class PuppeteerService {
   // EXTRAIR CLIENTES (usa aba disponível)
   // ============================================================
   async extrairClientes(userId) {
-    const tab = this.reserveTab(userId);
+    const tab = await this.reserveTab(userId);
     
     if (!tab) {
       return { 
@@ -879,7 +787,7 @@ class PuppeteerService {
   // GERAR CHAVE NUVEM FISCAL (com pool)
   // ============================================================
   async gerarChaveNuvemFiscalParaClientePorCNPJ(userId, cnpj, descricao = 'Chave automática') {
-    const tab = this.reserveTab(userId);
+    const tab = await this.reserveTab(userId);
     
     if (!tab) {
       return { 
@@ -998,18 +906,13 @@ class PuppeteerService {
       await page.waitForSelector('#DescricaoChaveId', { visible: true, timeout: 10000 });
       await new Promise(resolve => setTimeout(resolve, 1000));
       
-      // 9. Preencher a descrição da chave (via evaluate, sem keyboard)
+      // 9. Preencher a descrição da chave
       console.log(`[Aba ${tab.id}] 📝 Preenchendo descrição: "${descricao}"`);
-      await page.evaluate((desc) => {
-        const input = document.querySelector('#DescricaoChaveId');
-        if (!input) return;
-        const setter = Object.getOwnPropertyDescriptor(
-          window.HTMLInputElement.prototype, 'value'
-        ).set;
-        setter.call(input, desc);
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-      }, descricao);
+      await page.click('#DescricaoChaveId');
+      await page.evaluate(() => {
+        document.querySelector('#DescricaoChaveId').value = '';
+      });
+      await page.type('#DescricaoChaveId', descricao, { delay: 50 });
       
       // 10. Clicar no botão "Gerar Chave"
       console.log(`[Aba ${tab.id}] 🔘 Clicando em "Gerar Chave"...`);
