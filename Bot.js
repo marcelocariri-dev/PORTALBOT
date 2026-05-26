@@ -1,7 +1,7 @@
 import { Client, GatewayIntentBits, EmbedBuilder, SlashCommandBuilder } from 'discord.js';
 import { REST } from '@discordjs/rest';
 import { Routes } from 'discord-api-types/v10';
-import PuppeteerService from './PuppeteerService_new.js';
+import PuppeteerService from './PuppeteerService.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -19,6 +19,7 @@ let isInitialized = false;
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
+
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
   ],
@@ -52,6 +53,7 @@ const commands = [
           { name: 'Softcom Backup', value: 'Softcom Backup' },
           { name: 'Integração Contábil', value: 'Integração Contábil' },
           { name: 'Drica IA (WhatsApp)', value: 'Drica IA (WhatsApp)' },
+          { name: 'Collector', value: 'Collector' },
         )),
   
   new SlashCommandBuilder()
