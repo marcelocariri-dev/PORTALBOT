@@ -54,6 +54,9 @@ const commands = [
           { name: 'Integração Contábil', value: 'Integração Contábil' },
           { name: 'Drica IA (WhatsApp)', value: 'Drica IA (WhatsApp)' },
           { name: 'Collector', value: 'Collector' },
+          { name: 'SoftConnect', value: 'SoftConnect' },
+          { name: 'Venda Mais CRM', value: 'Venda Mais CRM' },
+          
         )),
   
   new SlashCommandBuilder()
